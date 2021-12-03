@@ -23,6 +23,7 @@
 #include "tsuba/RDGLineage.h"
 #include "tsuba/RDGTopology.h"
 #include "tsuba/ReadGroup.h"
+#include "tsuba/TxnContext.h"
 #include "tsuba/WriteGroup.h"
 #include "tsuba/tsuba.h"
 
@@ -144,10 +145,10 @@ public:
       const std::shared_ptr<arrow::Table>& props);
 
   katana::Result<void> UpsertNodeProperties(
-      const std::shared_ptr<arrow::Table>& props);
+      const std::shared_ptr<arrow::Table>& props, tsuba::TxnContext* txn_ctx);
 
   katana::Result<void> UpsertEdgeProperties(
-      const std::shared_ptr<arrow::Table>& props);
+      const std::shared_ptr<arrow::Table>& props, tsuba::TxnContext* txn_ctx);
 
   katana::Result<void> RemoveNodeProperty(int i);
   katana::Result<void> RemoveEdgeProperty(int i);
@@ -283,6 +284,13 @@ public:
   katana::Result<katana::EntityTypeManager> edge_entity_type_manager() const;
 
   void set_view_name(const std::string& v) { view_type_ = v; }
+
+  const tsuba::PropertyCache* prop_cache() const { return prop_cache_; }
+  tsuba::PropertyCache* prop_cache() { return prop_cache_; }
+
+  void set_prop_cache(tsuba::PropertyCache* prop_cache) {
+    prop_cache_ = prop_cache;
+  }
 
 private:
   std::string view_type_;

@@ -9,11 +9,12 @@
 
 namespace {
 
-katana::Result<void>
+katana::Result<std::unordered_set<std::string>>
 UpsertProperties(
     const std::shared_ptr<arrow::Table>& props,
     std::shared_ptr<arrow::Table>* to_update,
     std::vector<tsuba::PropStorageInfo>* prop_state) {
+  std::unordered_set<std::string> written_prop_names;
   if (!props->schema()->HasDistinctFieldNames()) {
     return KATANA_ERROR(
         tsuba::ErrorCode::Exists, "column names must be distinct: {}",
@@ -24,9 +25,10 @@ UpsertProperties(
     KATANA_LOG_ASSERT((*to_update)->num_columns() == 0);
     for (const auto& field : props->fields()) {
       prop_state->emplace_back(field->name(), field->type());
+      written_prop_names.insert(field->name());
     }
     *to_update = props;
-    return katana::ResultSuccess();
+    return written_prop_names;
   }
 
   std::shared_ptr<arrow::Table> next = *to_update;
@@ -60,13 +62,16 @@ UpsertProperties(
         next = arrow::Table::Make(arrow::schema({field}), {props->column(i)});
       } else {
         next = KATANA_CHECKED_CONTEXT(
-            next->AddColumn(last++, field, props->column(i)), "insert");
+            next->AddColumn(last++, field, props->column(i)),
+            "insert; column {}", i);
       }
     } else {
       next = KATANA_CHECKED_CONTEXT(
-          next->SetColumn(current_col, field, props->column(i)), "update");
+          next->SetColumn(current_col, field, props->column(i)),
+          "update; column {}", i);
     }
     prop_info_it->WasModified(field->type());
+    written_prop_names.insert(field->name());
   }
 
   if (!next->schema()->HasDistinctFieldNames()) {
@@ -77,7 +82,7 @@ UpsertProperties(
 
   *to_update = next;
 
-  return katana::ResultSuccess();
+  return written_prop_names;
 }
 
 katana::Result<void>
@@ -98,7 +103,11 @@ AddProperties(
           tsuba::ErrorCode::Exists, "column names are not distinct");
     }
   }
-  return UpsertProperties(props, to_update, prop_state);
+  auto written_prop_names =
+      KATANA_CHECKED(UpsertProperties(props, to_update, prop_state));
+
+  // TODO (yige): return write set to TxnContext
+  return katana::ResultSuccess();
 }
 
 katana::Result<void>
@@ -113,6 +122,18 @@ EnsureTypeLoaded(const katana::Uri& rdg_dir, tsuba::PropStorageInfo* psi) {
   return katana::ResultSuccess();
 }
 
+tsuba::PropStorageInfo*
+find_prop_info(
+    const std::string& name, std::vector<tsuba::PropStorageInfo>* prop_infos) {
+  auto it = std::find_if(
+      prop_infos->begin(), prop_infos->end(),
+      [&name](tsuba::PropStorageInfo& psi) { return psi.name() == name; });
+  if (it == prop_infos->end()) {
+    return nullptr;
+  }
+
+  return &(*it);
+}
 }  // namespace
 
 namespace tsuba {
@@ -164,15 +185,27 @@ RDGCore::AddEdgeProperties(const std::shared_ptr<arrow::Table>& props) {
 }
 
 katana::Result<void>
-RDGCore::UpsertNodeProperties(const std::shared_ptr<arrow::Table>& props) {
-  return UpsertProperties(
-      props, &node_properties_, &part_header_.node_prop_info_list());
+RDGCore::UpsertNodeProperties(
+    const std::shared_ptr<arrow::Table>& props, tsuba::TxnContext* txn_ctx) {
+  KATANA_LOG_DEBUG_ASSERT(txn_ctx != nullptr);
+  auto written_prop_names = KATANA_CHECKED(UpsertProperties(
+      props, &node_properties_, &part_header_.node_prop_info_list()));
+  // store write properties into transaction context
+  txn_ctx->InsertNodePropertyWrite(std::move(written_prop_names));
+
+  return katana::ResultSuccess();
 }
 
 katana::Result<void>
-RDGCore::UpsertEdgeProperties(const std::shared_ptr<arrow::Table>& props) {
-  return UpsertProperties(
-      props, &edge_properties_, &part_header_.edge_prop_info_list());
+RDGCore::UpsertEdgeProperties(
+    const std::shared_ptr<arrow::Table>& props, tsuba::TxnContext* txn_ctx) {
+  KATANA_LOG_DEBUG_ASSERT(txn_ctx != nullptr);
+  auto written_prop_names = KATANA_CHECKED(UpsertProperties(
+      props, &edge_properties_, &part_header_.edge_prop_info_list()));
+  // store write properties into transaction context
+  txn_ctx->InsertEdgePropertyWrite(std::move(written_prop_names));
+
+  return katana::ResultSuccess();
 }
 
 katana::Result<void>
@@ -237,6 +270,19 @@ RDGCore::RemoveEdgeProperty(int i) {
   edge_properties_ = KATANA_CHECKED(edge_properties_->RemoveColumn(i));
 
   return part_header_.RemoveEdgeProperty(field->name());
+}
+
+PropStorageInfo*
+RDGCore::find_node_prop_info(const std::string& name) {
+  return find_prop_info(name, &part_header().node_prop_info_list());
+}
+PropStorageInfo*
+RDGCore::find_edge_prop_info(const std::string& name) {
+  return find_prop_info(name, &part_header().edge_prop_info_list());
+}
+PropStorageInfo*
+RDGCore::find_part_prop_info(const std::string& name) {
+  return find_prop_info(name, &part_header().part_prop_info_list());
 }
 
 }  // namespace tsuba

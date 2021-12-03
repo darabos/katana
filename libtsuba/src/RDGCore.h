@@ -13,6 +13,7 @@
 #include "katana/config.h"
 #include "tsuba/FileView.h"
 #include "tsuba/RDGTopology.h"
+#include "tsuba/TxnContext.h"
 
 namespace tsuba {
 
@@ -33,10 +34,10 @@ public:
       const std::shared_ptr<arrow::Table>& props);
 
   katana::Result<void> UpsertNodeProperties(
-      const std::shared_ptr<arrow::Table>& props);
+      const std::shared_ptr<arrow::Table>& props, tsuba::TxnContext* txn_ctx);
 
   katana::Result<void> UpsertEdgeProperties(
-      const std::shared_ptr<arrow::Table>& props);
+      const std::shared_ptr<arrow::Table>& props, tsuba::TxnContext* txn_ctx);
 
   katana::Result<void> RemoveNodeProperty(int i);
 
@@ -197,6 +198,10 @@ public:
     part_header_ = std::move(part_header);
   }
 
+  PropStorageInfo* find_node_prop_info(const std::string& name);
+  PropStorageInfo* find_edge_prop_info(const std::string& name);
+  PropStorageInfo* find_part_prop_info(const std::string& name);
+
   const RDGTopologyManager& topology_manager() const {
     return topology_manager_;
   }
@@ -208,11 +213,9 @@ public:
     topology_manager_ = std::move(topo_manager);
     if (!part_header_.IsMetadataOutsideTopologyFile()) {
       // need to bind & map topology file now to extract the metadata
-      KATANA_CHECKED_CONTEXT(
-          topology_manager_.ExtractMetadata(
-              metadata_dir, part_header_.metadata().num_nodes_,
-              part_header_.metadata().num_edges_),
-          "Extracting metadata from previous format topology file");
+      KATANA_CHECKED(topology_manager_.ExtractMetadata(
+          metadata_dir, part_header_.metadata().num_nodes_,
+          part_header_.metadata().num_edges_));
     }
 
     return katana::ResultSuccess();
@@ -248,10 +251,8 @@ public:
     topology_manager_ = std::move(topo_manager);
 
     // get the metadata we need from the topology file
-    KATANA_CHECKED_CONTEXT(
-        topology_manager_.ExtractMetadata(
-            rdg_dir, num_nodes, num_edges, /*storage_valid=*/true),
-        "Extracting metadata from previous format topology file");
+    KATANA_CHECKED(topology_manager_.ExtractMetadata(
+        rdg_dir, num_nodes, num_edges, /*storage_valid=*/true));
     return katana::ResultSuccess();
   }
 
